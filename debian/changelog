@@ -1,0 +1,5 @@
+virglrenderer (0.4.0-1) unstable; urgency=medium
+
+  * Initial packaging. (Closes: #813657)
+
+ -- Daniel Pocock <daniel@pocock.pro>  Wed, 02 Mar 2016 13:48:07 +0100

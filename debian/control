@@ -1,0 +1,26 @@
+Source: virglrenderer
+Section: libs
+Priority: extra
+Maintainer: Debian QEMU Team <pkg-qemu-devel@lists.alioth.debian.org>
+Uploaders: Daniel Pocock <daniel@pocock.pro>
+Build-Depends: debhelper (>= 9.0.0), dh-autoreconf, autotools-dev, autoconf-archive, dpkg-dev (>= 1.16.1~), pkg-config, libepoxy-dev, libdrm-dev, libegl1-mesa-dev, libgbm-dev, python
+Homepage: http://cgit.freedesktop.org/~airlied/virglrenderer
+Standards-Version: 3.9.6
+Vcs-Git: git://anonscm.debian.org/pkg-qemu/virglrenderer.git
+Vcs-Browser: https://anonscm.debian.org/cgit/pkg-qemu/virglrenderer.git
+
+Package: libvirglrenderer0
+Architecture: any
+Pre-Depends: ${misc:Pre-Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: virtual GPU for KVM virtualization
+ Library used by qemu to implement 3D GPU support for the virtio GPU.
+
+Package: libvirglrenderer-dev
+Section: libdevel
+Architecture: any
+Depends: ${misc:Depends}, libvirglrenderer0 (= ${binary:Version})
+Description: virtual GPU for KVM virtualization - headers
+ Library used by qemu to implement 3D GPU support for the virtio GPU.
+ .
+ This packages contains the development files and headers.
