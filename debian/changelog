@@ -1,3 +1,9 @@
+virglrenderer (0.4.0-2) unstable; urgency=medium
+
+  * Add extra debian/copyright detail.
+
+ -- Daniel Pocock <daniel@pocock.pro>  Wed, 02 Mar 2016 18:42:12 +0100
+
 virglrenderer (0.4.0-1) unstable; urgency=medium
 
   * Initial packaging. (Closes: #813657)
