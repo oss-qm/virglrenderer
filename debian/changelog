@@ -1,3 +1,10 @@
+virglrenderer (0.4.0-6) unstable; urgency=high
+
+  * Non-maintainer upload.
+  * Install virglrenderer.pc pkg-config file (Closes: #818665).
+
+ -- Daniel Pocock <daniel@pocock.pro>  Tue, 05 Apr 2016 10:35:19 +0200
+
 virglrenderer (0.4.0-5) unstable; urgency=medium
 
   * Only install libvirglrenderer.so in dev package (Closes: #817112)
