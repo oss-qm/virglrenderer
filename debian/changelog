@@ -1,3 +1,9 @@
+virglrenderer (0.5.0-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Daniel Pocock <daniel@pocock.pro>  Sat, 25 Jun 2016 11:00:40 +0200
+
 virglrenderer (0.4.0-6) unstable; urgency=high
 
   * Non-maintainer upload.
