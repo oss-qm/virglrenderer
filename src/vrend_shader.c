@@ -25,6 +25,7 @@
 #include "tgsi/tgsi_info.h"
 #include "tgsi/tgsi_iterate.h"
 #include "util/u_memory.h"
+#include "util/u_math.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -54,6 +55,7 @@ struct vrend_shader_io {
 
 struct vrend_shader_sampler {
    int tgsi_sampler_type;
+   enum tgsi_return_type tgsi_sampler_return;
 };
 
 #define MAX_IMMEDIATE 1024
@@ -82,6 +84,7 @@ struct dump_ctx {
 
    int num_interps;
    int num_inputs;
+   uint32_t attrib_input_mask;
    struct vrend_shader_io inputs[32];
    int num_outputs;
    struct vrend_shader_io outputs[32];
@@ -114,6 +117,7 @@ struct dump_ctx {
    bool uses_lodq;
    bool uses_txq_levels;
    bool uses_tg4;
+   bool uses_layer;
    bool write_all_cbufs;
    bool uses_stencil_export;
    uint32_t shadow_samp_mask;
@@ -135,6 +139,7 @@ struct dump_ctx {
    bool has_clipvertex;
    bool has_clipvertex_so;
    bool has_viewport_idx;
+   bool has_frag_viewport_idx;
 };
 
 static inline const char *tgsi_proc_to_prefix(int shader_type)
@@ -244,6 +249,13 @@ iter_declaration(struct tgsi_iterate_context *iter,
    switch (decl->Declaration.File) {
    case TGSI_FILE_INPUT:
       i = ctx->num_inputs++;
+      if (ctx->num_inputs > ARRAY_SIZE(ctx->inputs)) {
+         fprintf(stderr, "Number of inputs exceeded, max is %lu\n", ARRAY_SIZE(ctx->inputs));
+         return FALSE;
+      }
+      if (iter->processor.Processor == TGSI_PROCESSOR_VERTEX) {
+         ctx->attrib_input_mask |= (1 << decl->Range.First);
+      }
       ctx->inputs[i].name = decl->Semantic.Name;
       ctx->inputs[i].sid = decl->Semantic.Index;
       ctx->inputs[i].interpolate = decl->Interp.Interpolate;
@@ -267,6 +279,11 @@ iter_declaration(struct tgsi_iterate_context *iter,
             } else {
                if (ctx->key->color_two_side) {
                   int j = ctx->num_inputs++;
+                  if (ctx->num_inputs > ARRAY_SIZE(ctx->inputs)) {
+                     fprintf(stderr, "Number of inputs exceeded, max is %lu\n", ARRAY_SIZE(ctx->inputs));
+                     return FALSE;
+                  }
+
                   ctx->inputs[j].name = TGSI_SEMANTIC_BCOLOR;
                   ctx->inputs[j].sid = decl->Semantic.Index;
                   ctx->inputs[j].interpolate = decl->Interp.Interpolate;
@@ -279,6 +296,11 @@ iter_declaration(struct tgsi_iterate_context *iter,
 
                   if (ctx->front_face_emitted == false) {
                      int k = ctx->num_inputs++;
+                     if (ctx->num_inputs > ARRAY_SIZE(ctx->inputs)) {
+                        fprintf(stderr, "Number of inputs exceeded, max is %lu\n", ARRAY_SIZE(ctx->inputs));
+                        return FALSE;
+                     }
+
                      ctx->inputs[k].name = TGSI_SEMANTIC_FACE;
                      ctx->inputs[k].sid = 0;
                      ctx->inputs[k].interpolate = 0;
@@ -308,6 +330,27 @@ iter_declaration(struct tgsi_iterate_context *iter,
             ctx->inputs[i].glsl_predefined_no_emit = true;
             ctx->inputs[i].glsl_no_index = true;
             ctx->glsl_ver_required = 150;
+            break;
+         }
+      case TGSI_SEMANTIC_VIEWPORT_INDEX:
+         if (iter->processor.Processor == TGSI_PROCESSOR_FRAGMENT) {
+            ctx->inputs[i].glsl_predefined_no_emit = true;
+            ctx->inputs[i].glsl_no_index = true;
+            ctx->inputs[i].is_int = true;
+            ctx->inputs[i].override_no_wm = true;
+            name_prefix = "gl_ViewportIndex";
+            if (ctx->glsl_ver_required >= 140)
+               ctx->has_frag_viewport_idx = true;
+            break;
+         }
+      case TGSI_SEMANTIC_LAYER:
+         if (iter->processor.Processor == TGSI_PROCESSOR_FRAGMENT) {
+            name_prefix = "gl_Layer";
+            ctx->inputs[i].glsl_predefined_no_emit = true;
+            ctx->inputs[i].glsl_no_index = true;
+            ctx->inputs[i].is_int = true;
+            ctx->inputs[i].override_no_wm = true;
+            ctx->uses_layer = true;
             break;
          }
       case TGSI_SEMANTIC_PSIZE:
@@ -404,6 +447,11 @@ iter_declaration(struct tgsi_iterate_context *iter,
       break;
    case TGSI_FILE_OUTPUT:
       i = ctx->num_outputs++;
+      if (ctx->num_outputs > ARRAY_SIZE(ctx->outputs)) {
+         fprintf(stderr, "Number of outputs exceeded, max is %lu\n", ARRAY_SIZE(ctx->outputs));
+         return FALSE;
+      }
+
       ctx->outputs[i].name = decl->Semantic.Name;
       ctx->outputs[i].sid = decl->Semantic.Index;
       ctx->outputs[i].interpolate = decl->Interp.Interpolate;
@@ -423,8 +471,6 @@ iter_declaration(struct tgsi_iterate_context *iter,
             ctx->outputs[i].glsl_predefined_no_emit = true;
             ctx->outputs[i].glsl_no_index = true;
          } else if (iter->processor.Processor == TGSI_PROCESSOR_FRAGMENT) {
-            if (ctx->outputs[i].first > 0)
-               fprintf(stderr,"Illegal position input\n");
             name_prefix = "gl_FragDepth";
             ctx->outputs[i].glsl_predefined_no_emit = true;
             ctx->outputs[i].glsl_no_index = true;
@@ -567,6 +613,11 @@ iter_declaration(struct tgsi_iterate_context *iter,
       ctx->samplers_used |= (1 << decl->Range.Last);
       break;
    case TGSI_FILE_SAMPLER_VIEW:
+      if (decl->Range.First >= ARRAY_SIZE(ctx->samplers)) {
+         fprintf(stderr, "Sampler view exceeded, max is %lu\n", ARRAY_SIZE(ctx->samplers));
+         return FALSE;
+      }
+      ctx->samplers[decl->Range.First].tgsi_sampler_return = decl->SamplerView.ReturnTypeX;
       break;
    case TGSI_FILE_CONSTANT:
       if (decl->Declaration.Dimension) {
@@ -590,6 +641,11 @@ iter_declaration(struct tgsi_iterate_context *iter,
       break;
    case TGSI_FILE_SYSTEM_VALUE:
       i = ctx->num_system_values++;
+      if (ctx->num_system_values > ARRAY_SIZE(ctx->system_values)) {
+         fprintf(stderr, "Number of system values exceeded, max is %lu\n", ARRAY_SIZE(ctx->system_values));
+         return FALSE;
+      }
+
       ctx->system_values[i].name = decl->Semantic.Name;
       ctx->system_values[i].sid = decl->Semantic.Index;
       ctx->system_values[i].glsl_predefined_no_emit = true;
@@ -745,6 +801,7 @@ static int emit_alpha_test(struct dump_ctx *ctx)
    case PIPE_FUNC_NOTEQUAL:
    case PIPE_FUNC_GEQUAL:
       snprintf(comp_buf, 128, "%s %s %f", "fsout_c0.w", atests[ctx->key->alpha_test], ctx->key->alpha_ref_val);
+      break;
    default:
       fprintf(stderr, "invalid alpha-test: %x\n", ctx->key->alpha_test);
       return EINVAL;
@@ -812,6 +869,11 @@ static int emit_so_movs(struct dump_ctx *ctx)
    char outtype[15] = {0};
    char writemask[6];
    char *sret;
+
+   if (ctx->so->num_outputs >= PIPE_MAX_SO_OUTPUTS) {
+      fprintf(stderr, "Num outputs exceeded, max is %lu\n", PIPE_MAX_SO_OUTPUTS);
+      return EINVAL;
+   }
 
    for (i = 0; i < ctx->so->num_outputs; i++) {
       if (ctx->so->output[i].start_component != 0) {
@@ -940,9 +1002,10 @@ static int translate_tex(struct dump_ctx *ctx,
                          char  dsts[3][255],
                          const char *writemask,
                          const char *dstconv,
-                         const char *dtypeprefix)
+                         bool dst0_override_no_wm)
 {
-   const char *twm, *gwm = NULL, *txfi;
+   const char *twm = "", *gwm = NULL, *txfi;
+   const char *dtypeprefix = "";
    bool is_shad = false;
    char buf[512];
    char offbuf[128] = {0};
@@ -950,9 +1013,36 @@ static int translate_tex(struct dump_ctx *ctx,
    int sampler_index;
    const char *tex_ext;
 
+   if (sreg_index >= ARRAY_SIZE(ctx->samplers)) {
+      fprintf(stderr, "Sampler view exceeded, max is %lu\n", ARRAY_SIZE(ctx->samplers));
+      return FALSE;
+   }
+
    ctx->samplers[sreg_index].tgsi_sampler_type = inst->Texture.Texture;
 
+   if (inst->Instruction.Opcode == TGSI_OPCODE_TXQ) {
+      dtypeprefix = "intBitsToFloat";
+   } else {
+      switch (ctx->samplers[sreg_index].tgsi_sampler_return) {
+      case TGSI_RETURN_TYPE_SINT:
+         dtypeprefix = "intBitsToFloat";
+         break;
+      case TGSI_RETURN_TYPE_UINT:
+         dtypeprefix = "uintBitsToFloat";
+         break;
+      default:
+         break;
+      }
+   }
+
    switch (inst->Texture.Texture) {
+   case TGSI_TEXTURE_1D:
+   case TGSI_TEXTURE_2D:
+   case TGSI_TEXTURE_3D:
+   case TGSI_TEXTURE_CUBE:
+   case TGSI_TEXTURE_1D_ARRAY:
+   case TGSI_TEXTURE_2D_ARRAY:
+      break;
    case TGSI_TEXTURE_SHADOWCUBE_ARRAY:
       is_shad = true;
    case TGSI_TEXTURE_CUBE_ARRAY:
@@ -1002,13 +1092,52 @@ static int translate_tex(struct dump_ctx *ctx,
 
       /* need to emit a textureQueryLevels */
       if (inst->Dst[0].Register.WriteMask & 0x8) {
-         ctx->uses_txq_levels = true;
-         snprintf(buf, 255, "%s = %s(%s(textureQueryLevels(%s)));\n", dsts[0], dstconv, dtypeprefix, srcs[sampler_index]);
-         return emit_buf(ctx, buf);
-      } else {
-         snprintf(buf, 255, "%s = %s(%s(textureSize(%s%s)));\n", dsts[0], dstconv, dtypeprefix, srcs[sampler_index], bias);
-         return emit_buf(ctx, buf);
+
+         if (inst->Texture.Texture != TGSI_TEXTURE_BUFFER &&
+             inst->Texture.Texture != TGSI_TEXTURE_RECT &&
+             inst->Texture.Texture != TGSI_TEXTURE_2D_MSAA &&
+             inst->Texture.Texture != TGSI_TEXTURE_2D_ARRAY_MSAA) {
+            ctx->uses_txq_levels = true;
+            if (inst->Dst[0].Register.WriteMask & 0x7)
+               twm = ".w";
+            snprintf(buf, 255, "%s%s = %s(textureQueryLevels(%s));\n", dsts[0], twm, dtypeprefix, srcs[sampler_index]);
+            EMIT_BUF_WITH_RET(ctx, buf);
+         }
+
+         if (inst->Dst[0].Register.WriteMask & 0x7) {
+            switch (inst->Texture.Texture) {
+            case TGSI_TEXTURE_1D:
+            case TGSI_TEXTURE_BUFFER:
+            case TGSI_TEXTURE_SHADOW1D:
+               twm = ".x";
+               break;
+            case TGSI_TEXTURE_1D_ARRAY:
+            case TGSI_TEXTURE_SHADOW1D_ARRAY:
+            case TGSI_TEXTURE_2D:
+            case TGSI_TEXTURE_SHADOW2D:
+            case TGSI_TEXTURE_RECT:
+            case TGSI_TEXTURE_SHADOWRECT:
+            case TGSI_TEXTURE_CUBE:
+            case TGSI_TEXTURE_SHADOWCUBE:
+               twm = ".xy";
+               break;
+            case TGSI_TEXTURE_3D:
+            case TGSI_TEXTURE_2D_ARRAY:
+            case TGSI_TEXTURE_SHADOW2D_ARRAY:
+            case TGSI_TEXTURE_SHADOWCUBE_ARRAY:
+            case TGSI_TEXTURE_CUBE_ARRAY:
+               twm = ".xyz";
+               break;
+            }
+         }
       }
+
+      if (inst->Dst[0].Register.WriteMask & 0x7) {
+         snprintf(buf, 255, "%s%s = %s(textureSize(%s%s))%s;\n", dsts[0], twm, dtypeprefix, srcs[sampler_index], bias, util_bitcount(inst->Dst[0].Register.WriteMask) > 1 ? writemask : "");
+         EMIT_BUF_WITH_RET(ctx, buf);
+      }
+
+      return 0;
    }
 
    switch (inst->Texture.Texture) {
@@ -1154,7 +1283,11 @@ static int translate_tex(struct dump_ctx *ctx,
    }
 
    if (inst->Texture.NumOffsets == 1) {
-      struct immed *imd = &ctx->imm[(inst->TexOffsets[0].Index)];
+      if (inst->TexOffsets[0].Index >= ARRAY_SIZE(ctx->imm)) {
+         fprintf(stderr, "Immediate exceeded, max is %lu\n", ARRAY_SIZE(ctx->imm));
+         return false;
+      }
+      struct immed *imd = &ctx->imm[inst->TexOffsets[0].Index];
       switch (inst->Texture.Texture) {
       case TGSI_TEXTURE_1D:
       case TGSI_TEXTURE_1D_ARRAY:
@@ -1188,7 +1321,7 @@ static int translate_tex(struct dump_ctx *ctx,
       }
    }
    if (inst->Instruction.Opcode == TGSI_OPCODE_TXF) {
-      snprintf(buf, 255, "%s = %s(texelFetch%s(%s, %s(%s%s)%s%s)%s);\n", dsts[0], dstconv, tex_ext, srcs[sampler_index], txfi, srcs[0], twm, bias, offbuf, ctx->outputs[0].override_no_wm ? "" : writemask);
+      snprintf(buf, 255, "%s = %s(%s(texelFetch%s(%s, %s(%s%s)%s%s)%s));\n", dsts[0], dstconv, dtypeprefix, tex_ext, srcs[sampler_index], txfi, srcs[0], twm, bias, offbuf, dst0_override_no_wm ? "" : writemask);
    } else if (ctx->cfg->glsl_version < 140 && ctx->uses_sampler_rect) {
       /* rect is special in GLSL 1.30 */
       if (inst->Texture.Texture == TGSI_TEXTURE_RECT)
@@ -1198,9 +1331,9 @@ static int translate_tex(struct dump_ctx *ctx,
    } else if (is_shad) { /* TGSI returns 1.0 in alpha */
       const char *cname = tgsi_proc_to_prefix(ctx->prog_type);
       const struct tgsi_full_src_register *src = &inst->Src[sampler_index];
-      snprintf(buf, 255, "%s = %s(vec4(vec4(texture%s(%s, %s%s%s%s)) * %sshadmask%d + %sshadadd%d)%s);\n", dsts[0], dstconv, tex_ext, srcs[sampler_index], srcs[0], twm, offbuf, bias, cname, src->Register.Index, cname, src->Register.Index, writemask);
+      snprintf(buf, 255, "%s = %s(%s(vec4(vec4(texture%s(%s, %s%s%s%s)) * %sshadmask%d + %sshadadd%d)%s));\n", dsts[0], dstconv, dtypeprefix, tex_ext, srcs[sampler_index], srcs[0], twm, offbuf, bias, cname, src->Register.Index, cname, src->Register.Index, writemask);
    } else
-      snprintf(buf, 255, "%s = %s(texture%s(%s, %s%s%s%s)%s);\n", dsts[0], dstconv, tex_ext, srcs[sampler_index], srcs[0], twm, offbuf, bias, ctx->outputs[0].override_no_wm ? "" : writemask);
+      snprintf(buf, 255, "%s = %s(%s(texture%s(%s, %s%s%s%s)%s));\n", dsts[0], dstconv, dtypeprefix, tex_ext, srcs[sampler_index], srcs[0], twm, offbuf, bias, dst0_override_no_wm ? "" : writemask);
    return emit_buf(ctx, buf);
 }
 
@@ -1222,6 +1355,7 @@ iter_instruction(struct tgsi_iterate_context *iter,
    const char *dtypeprefix="", *stypeprefix = "", *svec4 = "vec4";
    bool stprefix = false;
    bool override_no_wm[4];
+   bool dst_override_no_wm[2];
    char *sret;
    int ret;
 
@@ -1273,6 +1407,8 @@ iter_instruction(struct tgsi_iterate_context *iter,
    }
    for (i = 0; i < inst->Instruction.NumDstRegs; i++) {
       const struct tgsi_full_dst_register *dst = &inst->Dst[i];
+
+      dst_override_no_wm[i] = false;
       if (dst->Register.WriteMask != TGSI_WRITEMASK_XYZW) {
          int wm_idx = 0;
          writemask[wm_idx++] = '.';
@@ -1304,6 +1440,7 @@ iter_instruction(struct tgsi_iterate_context *iter,
                   snprintf(dsts[i], 255, "clip_dist_temp[%d]", ctx->outputs[j].sid);
                } else {
                   snprintf(dsts[i], 255, "%s%s", ctx->outputs[j].glsl_name, ctx->outputs[j].override_no_wm ? "" : writemask);
+                  dst_override_no_wm[i] = ctx->outputs[j].override_no_wm;
                   if (ctx->outputs[j].is_int) {
                      if (!strcmp(dtypeprefix, ""))
                         dtypeprefix = "floatBitsToInt";
@@ -1384,7 +1521,7 @@ iter_instruction(struct tgsi_iterate_context *iter,
                   idx += src->Register.SwizzleX;
                   snprintf(srcs[i], 255, "%s(vec4(%s%s%s[%d]))", stypeprefix, prefix, arrayname, ctx->inputs[j].glsl_name, idx);
                } else
-                  snprintf(srcs[i], 255, "%s(%s%s%s%s)", stypeprefix, prefix, ctx->inputs[j].glsl_name, arrayname, swizzle);
+                  snprintf(srcs[i], 255, "%s(%s%s%s%s)", stypeprefix, prefix, ctx->inputs[j].glsl_name, arrayname, ctx->inputs[j].is_int ? "" : swizzle);
                override_no_wm[i] = ctx->inputs[j].override_no_wm;
                break;
             }
@@ -1426,7 +1563,11 @@ iter_instruction(struct tgsi_iterate_context *iter,
          snprintf(srcs[i], 255, "%ssamp%d%s", cname, src->Register.Index, swizzle);
          sreg_index = src->Register.Index;
       } else if (src->Register.File == TGSI_FILE_IMMEDIATE) {
-         struct immed *imd = &ctx->imm[(src->Register.Index)];
+         if (src->Register.Index >= ARRAY_SIZE(ctx->imm)) {
+            fprintf(stderr, "Immediate exceeded, max is %lu\n", ARRAY_SIZE(ctx->imm));
+            return false;
+         }
+         struct immed *imd = &ctx->imm[src->Register.Index];
          int idx = src->Register.SwizzleX;
          char temp[48];
          const char *vtype = "vec4";
@@ -1734,7 +1875,7 @@ iter_instruction(struct tgsi_iterate_context *iter,
    case TGSI_OPCODE_TXP:
    case TGSI_OPCODE_TXQ:
    case TGSI_OPCODE_LODQ:
-      ret = translate_tex(ctx, inst, sreg_index, srcs, dsts, writemask, dstconv, dtypeprefix);
+      ret = translate_tex(ctx, inst, sreg_index, srcs, dsts, writemask, dstconv, dst_override_no_wm[0]);
       if (ret)
          return FALSE;
       break;
@@ -1967,9 +2108,25 @@ static char *emit_header(struct dump_ctx *ctx, char *glsl_hdr)
       STRCAT_WITH_RET(glsl_hdr, "#extension GL_ARB_texture_gather : require\n");
    if (ctx->has_viewport_idx)
       STRCAT_WITH_RET(glsl_hdr, "#extension GL_ARB_viewport_array : require\n");
+   if (ctx->has_frag_viewport_idx)
+      STRCAT_WITH_RET(glsl_hdr, "#extension GL_ARB_fragment_layer_viewport : require\n");
    if (ctx->uses_stencil_export)
       STRCAT_WITH_RET(glsl_hdr, "#extension GL_ARB_shader_stencil_export : require\n");
+   if (ctx->uses_layer)
+      STRCAT_WITH_RET(glsl_hdr, "#extension GL_ARB_fragment_layer_viewport : require\n");
    return glsl_hdr;
+}
+
+char vrend_shader_samplerreturnconv(enum tgsi_return_type type)
+{
+   switch (type) {
+   case TGSI_RETURN_TYPE_SINT:
+      return 'i';
+   case TGSI_RETURN_TYPE_UINT:
+      return 'u';
+   default:
+      return ' ';
+   }
 }
 
 const char *vrend_shader_samplertypeconv(int sampler_type, int *is_shad)
@@ -2022,6 +2179,11 @@ static char *emit_ios(struct dump_ctx *ctx, char *glsl_hdr)
    const char *prefix = "";
    bool fcolor_emitted[2], bcolor_emitted[2];
    ctx->num_interps = 0;
+
+   if (ctx->so && ctx->so->num_outputs >= PIPE_MAX_SO_OUTPUTS) {
+      fprintf(stderr, "Num outputs exceeded, max is %lu\n", PIPE_MAX_SO_OUTPUTS);
+      return NULL;
+   }
 
    if (ctx->key->color_two_side) {
       fcolor_emitted[0] = fcolor_emitted[1] = false;
@@ -2196,17 +2358,19 @@ static char *emit_ios(struct dump_ctx *ctx, char *glsl_hdr)
    for (i = 0; i < 32; i++) {
       int is_shad = 0;
       const char *stc;
+      char ptc;
 
       if ((ctx->samplers_used & (1 << i)) == 0)
          continue;
 
+      ptc = vrend_shader_samplerreturnconv(ctx->samplers[i].tgsi_sampler_return);
       stc = vrend_shader_samplertypeconv(ctx->samplers[i].tgsi_sampler_type, &is_shad);
 
       if (stc) {
          const char *sname;
 
          sname = tgsi_proc_to_prefix(ctx->prog_type);
-         snprintf(buf, 255, "uniform sampler%s %ssamp%d;\n", stc, sname, i);
+         snprintf(buf, 255, "uniform %csampler%s %ssamp%d;\n", ptc, stc, sname, i);
          STRCAT_WITH_RET(glsl_hdr, buf);
          if (is_shad) {
             snprintf(buf, 255, "uniform vec4 %sshadmask%d;\n", sname, i);
@@ -2258,6 +2422,7 @@ static boolean fill_interpolants(struct dump_ctx *ctx, struct vrend_shader_info 
    if (ctx->prog_type == TGSI_PROCESSOR_VERTEX || ctx->prog_type == TGSI_PROCESSOR_GEOMETRY)
       return TRUE;
 
+   free(sinfo->interpinfo);
    sinfo->interpinfo = calloc(ctx->num_interps, sizeof(struct vrend_interp_info));
    if (!sinfo->interpinfo)
       return FALSE;
@@ -2354,6 +2519,7 @@ char *vrend_convert_shader(struct vrend_shader_cfg *cfg,
    sinfo->glsl_ver = ctx.glsl_ver_required;
    sinfo->gs_out_prim = ctx.gs_out_prim;
    sinfo->so_names = ctx.so_names;
+   sinfo->attrib_input_mask = ctx.attrib_input_mask;
    return glsl_final;
  fail:
    free(ctx.glsl_main);

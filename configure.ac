@@ -2,8 +2,8 @@ dnl Process this file with autoconf to create configure.
 
 AC_PREREQ([2.60])
 
-AC_INIT([virglrenderer], [0.4.0],
-    [])
+AC_INIT([virglrenderer], [0.5.0],
+    [virglrenderer-devel@lists.freedesktop.org])
 AC_CONFIG_SRCDIR([Makefile.am])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR([build-aux])
@@ -28,7 +28,21 @@ AC_SYS_LARGEFILE
 AC_CHECK_PROGS([PYTHON2], [python2 python])
 AX_CODE_COVERAGE
 
-AX_PTHREAD
+AC_MSG_CHECKING([for native Win32])
+case "$host_os" in
+     *mingw*|*cygwin*)
+        os_win32=yes
+        ;;
+     *)
+        os_win32=no
+        ;;
+esac
+AC_MSG_RESULT([$os_win32])
+AM_CONDITIONAL([OS_WIN32],[test "$os_win32" = "yes"])
+
+if test "x$os_win32" = xno; then
+   AX_PTHREAD
+fi
 
 AC_ARG_ENABLE([debug],
     [AS_HELP_STRING([--enable-debug],
@@ -63,7 +77,7 @@ AC_ARG_ENABLE(tests,
 
 PKG_CHECK_MODULES(CHECK, [check >= 0.9.4], [HAVE_CHECK="yes"], [HAVE_CHECK="no"])
 
-if test "x$build_tests" = "xauto"; then
+if test "x$build_tests" = "xauto" && test "x$os_win32" = "xno"; then
 	build_tests="$HAVE_CHECK"
 fi
 if test "x$build_tests" = "xyes"; then
@@ -75,13 +89,17 @@ if test "x$build_tests" = "xyes"; then
 fi
 
 AC_CHECK_FUNCS_ONCE([eventfd])
-
+AC_CHECK_HEADERS_ONCE([sys/uio.h epoxy/egl.h])
 AM_CONDITIONAL(HAVE_VALGRIND, [test "x$VALGRIND" != "x"])
 AM_CONDITIONAL(BUILD_TESTS, [test "x$build_tests" = "xyes"])
 
 LIBDRM_REQUIRED=2.4.50
 
-PKG_CHECK_MODULES([LIBDRM], [libdrm >= $LIBDRM_REQUIRED])
+if test "x$os_win32" = xno; then
+    PKG_CHECK_MODULES([LIBDRM], [libdrm >= $LIBDRM_REQUIRED])
+    PKG_CHECK_MODULES([GBM], [gbm])
+fi
+
 PKG_CHECK_MODULES([EPOXY], [epoxy])
 
 AC_SUBST([DEFINES])

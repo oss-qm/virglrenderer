@@ -119,6 +119,14 @@ static boolean str_match_nocase_whole( const char **pcur, const char *str )
    return FALSE;
 }
 
+/* Eat until eol
+ */
+static void eat_until_eol( const char **pcur )
+{
+   while (**pcur != '\0' && **pcur != '\n')
+      (*pcur)++;
+}
+
 /* Eat zero or more whitespaces.
  */
 static void eat_opt_white( const char **pcur )
@@ -272,11 +280,18 @@ struct translate_ctx
    unsigned num_immediates;
 };
 
-static void report_error( struct translate_ctx *ctx, const char *msg )
+static void report_error(struct translate_ctx *ctx, const char *format, ...)
 {
+   va_list args;
    int line = 1;
    int column = 1;
    const char *itr = ctx->text;
+
+   debug_printf("\nTGSI asm error: ");
+
+   va_start(args, format);
+   _debug_vprintf(format, args);
+   va_end(args);
 
    while (itr != ctx->cur) {
       if (*itr == '\n') {
@@ -287,7 +302,7 @@ static void report_error( struct translate_ctx *ctx, const char *msg )
       ++itr;
    }
 
-   debug_printf( "\nTGSI asm error: %s [%d : %d] \n", msg, line, column );
+   debug_printf(" [%d : %d] \n", line, column);
 }
 
 /* Parse shader header.
@@ -1586,8 +1601,9 @@ static boolean parse_property( struct translate_ctx *ctx )
       }
    }
    if (property_name >= TGSI_PROPERTY_COUNT) {
-      debug_printf( "\nError: Unknown property : '%s'", id );
-      return FALSE;
+      eat_until_eol( &ctx->cur );
+      report_error(ctx, "\nError: Unknown property : '%s'\n", id);
+      return TRUE;
    }
 
    eat_opt_white( &ctx->cur );

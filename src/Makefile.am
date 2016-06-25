@@ -1,5 +1,6 @@
 SUBDIRS := gallium/auxiliary
-AM_LDFLAGS = -lgbm -lm -ldl \
+AM_LDFLAGS = -lm \
+	$(GBM_LIBS) \
 	$(EPOXY_LIBS) \
 	$(CODE_COVERAGE_LDFLAGS)
 
@@ -9,6 +10,7 @@ AM_CFLAGS = \
 	$(DEFINES) \
 	$(PIC_FLAGS) \
 	$(LIBDRM_CFLAGS) \
+	$(GBM_CFLAGS) \
 	$(EPOXY_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
 	$(CODE_COVERAGE_CFLAGS)
@@ -27,14 +29,18 @@ libvrend_la_SOURCES = \
         vrend_formats.c \
         vrend_blitter.c \
         vrend_blitter.h \
-        iov.c \
+        iov.c
+
+if !OS_WIN32
+libvrend_la_SOURCES += \
         virgl_egl.h \
         virgl_egl_context.c
+endif
 
 lib_LTLIBRARIES = libvirglrenderer.la
 noinst_LTLIBRARIES = libvrend.la
 
-GM_LDFLAGS = -Wl,-Bsymbolic -version-number 0:1 -no-undefined
+GM_LDFLAGS = -Wl,-Bsymbolic -version-number 0:2 -no-undefined
 
 libvirglrenderer_la_SOURCES = virglrenderer.c
 libvirglrenderer_ladir = $(libdir)
